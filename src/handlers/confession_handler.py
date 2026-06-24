@@ -579,19 +579,21 @@ class ConfessionHandler:
         if embed_color is None:
             raise ValueError("Invalid custom color")
 
-        # Build embed including options and initial counts
+        # Build embed with question and option fields
         if options is None:
             options = ["Yes", "No"]
-        description_lines = [question, "\n"]
-        for idx, opt in enumerate(options, start=1):
-            description_lines.append(f"{idx}. {opt} — 0 votes")
-
+        
         embed = self._build_embed(
             f"Anonymous Poll (#{poll_id})",
-            "\n".join(description_lines),
+            question,
             embed_color,
             attachment_url,
         )
+        
+        # Add each option as a field with vote count
+        for idx, opt in enumerate(options):
+            embed.add_field(name=opt, value="0 votes", inline=False)
+        
         sent_msg = await confession_channel.send(embed=embed)
         # store poll state
         self._poll_options[sent_msg.id] = options
@@ -618,7 +620,7 @@ class ConfessionHandler:
         view = discord.ui.View(timeout=None)
 
         for idx, opt in enumerate(options):
-            button = discord.ui.Button(label="Vote", style=discord.ButtonStyle.primary)
+            button = discord.ui.Button(label=f"Vote: {opt}", style=discord.ButtonStyle.primary, custom_id=f"poll_vote_{message_id}_{idx}")
 
             async def _cb(interaction: discord.Interaction, _idx=idx, _mid=message_id):
                 await self._handle_poll_vote(interaction, _mid, _idx)
@@ -665,17 +667,18 @@ class ConfessionHandler:
 
         if poll_msg and poll_msg.embeds:
             embed = poll_msg.embeds[0]
-            # rebuild description: original question then option counts
-            lines = embed.description.splitlines() if embed.description else []
-            # assume first line is question
-            if lines:
-                question_line = lines[0]
-            else:
-                question_line = "Poll"
-            new_lines = [question_line, "\n"]
-            for i, opt in enumerate(options, start=1):
-                new_lines.append(f"{i}. {opt} — {counts[i-1]} votes")
-            embed.description = "\n".join(new_lines)
+            # update fields with new vote counts
+            if embed.fields:
+                new_fields = []
+                for i, (field) in enumerate(embed.fields):
+                    if i < len(options):
+                        new_fields.append({"name": options[i], "value": f"{counts[i]} votes", "inline": False})
+                    else:
+                        new_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
+                # Recreate fields
+                embed.clear_fields()
+                for f in new_fields:
+                    embed.add_field(name=f["name"], value=f["value"], inline=f["inline"])
             try:
                 await poll_msg.edit(embed=embed)
             except Exception:
