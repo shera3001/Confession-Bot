@@ -21,6 +21,13 @@ class ConfessionModal(discord.ui.Modal):
         max_length=400,
         required=False,
     )
+    custom_color = discord.ui.TextInput(
+        label="Custom Color (user premium only)",
+        style=discord.TextStyle.short,
+        max_length=32,
+        required=False,
+        placeholder="Ex: ff0000, #ff0000, or red",
+    )
 
     def __init__(self, handler: "ConfessionHandler", mode: str, source_message_id: Optional[int] = None):
         super().__init__(title="Submit a Confession")
@@ -31,17 +38,19 @@ class ConfessionModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         content = str(self.confession_content).strip()
         attachment = str(self.attachment_url).strip() or None
+        custom_color = str(self.custom_color).strip() or None
 
         if self.mode == "reply":
             await self.handler.handle_reply_from_interaction(
                 interaction,
                 content,
                 attachment,
+                custom_color,
                 self.source_message_id,
             )
             return
 
-        await self.handler.handle_confession_interaction(interaction, content, attachment)
+        await self.handler.handle_confession_interaction(interaction, content, attachment, custom_color)
 
 
 class ConfessionPanelView(discord.ui.View):
@@ -113,8 +122,49 @@ class ConfessionHandler:
         embed = discord.Embed(title=title, description=content, color=color)
         embed.set_footer(text="Anonim • Rahasia tinggi")
         if attachment_url:
-            embed.add_field(name="Attachment", value=attachment_url, inline=False)
+            lower_attachment = attachment_url.lower().split("?", 1)[0]
+            if lower_attachment.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+                embed.set_image(url=attachment_url)
+            else:
+                embed.add_field(name="Attachment", value=attachment_url, inline=False)
         return embed
+
+    def _resolve_custom_color(
+        self,
+        custom_color: Optional[str],
+        fallback_color: discord.Color,
+    ) -> Optional[discord.Color]:
+        if not custom_color:
+            return fallback_color
+
+        normalized = custom_color.strip().lower()
+        if not normalized:
+            return fallback_color
+
+        named_colors = {
+            "red": discord.Color.red(),
+            "blue": discord.Color.blue(),
+            "green": discord.Color.green(),
+            "yellow": discord.Color.yellow(),
+            "orange": discord.Color.orange(),
+            "teal": discord.Color.teal(),
+            "purple": discord.Color.purple(),
+            "blurple": discord.Color.blurple(),
+            "gold": discord.Color.gold(),
+            "dark blue": discord.Color.dark_blue(),
+            "dark green": discord.Color.dark_green(),
+            "dark purple": discord.Color.dark_purple(),
+        }
+        if normalized in named_colors:
+            return named_colors[normalized]
+
+        hex_value = normalized.lstrip("#")
+        if len(hex_value) == 3 and all(char in "0123456789abcdef" for char in hex_value):
+            hex_value = "".join(char * 2 for char in hex_value)
+        if len(hex_value) == 6 and all(char in "0123456789abcdef" for char in hex_value):
+            return discord.Color(int(hex_value, 16))
+
+        return None
 
     async def _respond_interaction(self, interaction: discord.Interaction, content: str):
         try:
@@ -188,6 +238,7 @@ class ConfessionHandler:
         author: discord.Member,
         content: str,
         attachment_url: Optional[str] = None,
+        custom_color: Optional[str] = None,
     ) -> Optional[discord.Message]:
         confession_channel_id = getattr(self.bot, "confession_channel_id", None)
         if not confession_channel_id:
@@ -198,10 +249,13 @@ class ConfessionHandler:
             return None
 
         confession_id = self._next_id()
+        embed_color = self._resolve_custom_color(custom_color, discord.Color.blurple())
+        if embed_color is None:
+            raise ValueError("Invalid custom color")
         embed = self._build_embed(
             f"Anonymous Confession (#{confession_id})",
             content,
-            discord.Color.blurple(),
+            embed_color,
             attachment_url,
         )
 
@@ -225,6 +279,7 @@ class ConfessionHandler:
         source_message: discord.Message,
         content: str,
         attachment_url: Optional[str] = None,
+        custom_color: Optional[str] = None,
     ) -> Optional[discord.Message]:
         origin_confession_id = self._extract_confession_id(source_message)
         if origin_confession_id is None:
@@ -236,10 +291,13 @@ class ConfessionHandler:
             thread = await source_message.create_thread(name=thread_name, auto_archive_duration=1440)
 
         reply_id = self._next_id()
+        embed_color = self._resolve_custom_color(custom_color, discord.Color.teal())
+        if embed_color is None:
+            raise ValueError("Invalid custom color")
         embed = self._build_embed(
             f"Anonymous Reply (#{reply_id})",
             content,
-            discord.Color.teal(),
+            embed_color,
             attachment_url,
         )
         sent_msg = await thread.send(embed=embed)
@@ -284,7 +342,7 @@ class ConfessionHandler:
         await confession_channel.send(embed=panel, view=ConfessionPanelView(self))
         await ctx.send("Panel confession berhasil dipasang.", delete_after=8)
 
-    async def handle_confession(self, ctx, confession_message):
+    async def handle_confession(self, ctx, confession_message, custom_color: Optional[str] = None):
         if not self.is_open:
             await ctx.send("Confession sedang ditutup.")
             return
@@ -293,7 +351,11 @@ class ConfessionHandler:
             await ctx.send("Channel confession belum diset. Jalankan !confess_setup dulu.")
             return
 
-        sent_msg = await self._post_confession(ctx.guild, ctx.author, confession_message)
+        try:
+            sent_msg = await self._post_confession(ctx.guild, ctx.author, confession_message, custom_color=custom_color)
+        except ValueError:
+            await ctx.send("Custom color tidak valid. Gunakan hex seperti #ff0000 atau nama warna seperti red.")
+            return
         if sent_msg is None:
             await ctx.send("Confession channel tidak ditemukan. Cek setup channel.")
             return
@@ -313,7 +375,13 @@ class ConfessionHandler:
         self.is_open = True
         await ctx.send("Confession submission dibuka.")
 
-    async def handle_confession_interaction(self, interaction: discord.Interaction, confession_message: str, attachment_url: Optional[str]):
+    async def handle_confession_interaction(
+        self,
+        interaction: discord.Interaction,
+        confession_message: str,
+        attachment_url: Optional[str],
+        custom_color: Optional[str] = None,
+    ):
         if not interaction.response.is_done():
             try:
                 await interaction.response.defer(ephemeral=True)
@@ -328,7 +396,20 @@ class ConfessionHandler:
             await self._respond_interaction(interaction, "Confession sedang ditutup.")
             return
 
-        sent_msg = await self._post_confession(interaction.guild, interaction.user, confession_message, attachment_url)
+        try:
+            sent_msg = await self._post_confession(
+                interaction.guild,
+                interaction.user,
+                confession_message,
+                attachment_url,
+                custom_color,
+            )
+        except ValueError:
+            await self._respond_interaction(
+                interaction,
+                "Custom color tidak valid. Gunakan hex seperti #ff0000 atau nama warna seperti red.",
+            )
+            return
         if sent_msg is None:
             await self._respond_interaction(interaction, "Confession channel belum siap. Jalankan !confess_setup dulu.")
             return
@@ -340,6 +421,7 @@ class ConfessionHandler:
         interaction: discord.Interaction,
         reply_content: str,
         attachment_url: Optional[str],
+        custom_color: Optional[str],
         source_message_id: Optional[int],
     ):
         if not interaction.response.is_done():
@@ -362,13 +444,21 @@ class ConfessionHandler:
             return
 
         source_message = await confession_channel.fetch_message(source_message_id)
-        sent_msg = await self._post_reply(
-            interaction.guild,
-            interaction.user,
-            source_message,
-            reply_content,
-            attachment_url,
-        )
+        try:
+            sent_msg = await self._post_reply(
+                interaction.guild,
+                interaction.user,
+                source_message,
+                reply_content,
+                attachment_url,
+                custom_color,
+            )
+        except ValueError:
+            await self._respond_interaction(
+                interaction,
+                "Custom color tidak valid. Gunakan hex seperti #ff0000 atau nama warna seperti red.",
+            )
+            return
         if sent_msg is None:
             await self._respond_interaction(interaction, "Tombol reply harus dipakai di pesan confession bot.")
             return

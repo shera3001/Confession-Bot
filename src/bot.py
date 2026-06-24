@@ -121,13 +121,21 @@ async def confess_audit(ctx, confession_id: int):
 
 
 @bot.tree.command(name="confess", description="Kirim confession anonim")
-@app_commands.describe(confession="Isi confession", attachment_url="URL attachment opsional")
+@app_commands.describe(
+    confession="Isi confession",
+    attachment="File attachment opsional",
+    attachment_url="URL attachment opsional",
+    custom_color="Warna kustom opsional",
+)
 async def slash_confess(
     interaction: discord.Interaction,
     confession: str,
+    attachment: Optional[discord.Attachment] = None,
     attachment_url: Optional[str] = None,
+    custom_color: Optional[str] = None,
 ):
-    await handler.handle_confession_interaction(interaction, confession, attachment_url)
+    resolved_attachment_url = attachment.url if attachment else attachment_url
+    await handler.handle_confession_interaction(interaction, confession, resolved_attachment_url, custom_color)
 
 
 @bot.tree.command(name="confess_setup", description="Setup channel confession dan audit")
