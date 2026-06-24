@@ -60,6 +60,11 @@ async def confess(ctx, *, confession: str):
     await handler.handle_confession(ctx, confession)
 
 
+@bot.command(name='poll')
+async def poll(ctx, *, question: str):
+    await handler.handle_poll(ctx, question)
+
+
 @bot.command(name='confess_setup')
 async def confess_setup(
     ctx,
@@ -136,6 +141,24 @@ async def slash_confess(
 ):
     resolved_attachment_url = attachment.url if attachment else attachment_url
     await handler.handle_confession_interaction(interaction, confession, resolved_attachment_url, custom_color)
+
+
+@bot.tree.command(name="poll", description="Buat poll anonim")
+@app_commands.describe(
+    question="Pertanyaan poll",
+    attachment="File foto opsional",
+    attachment_url="URL attachment opsional",
+    custom_color="Warna kustom opsional",
+)
+async def slash_poll(
+    interaction: discord.Interaction,
+    question: str,
+    attachment: Optional[discord.Attachment] = None,
+    attachment_url: Optional[str] = None,
+    custom_color: Optional[str] = None,
+):
+    resolved_attachment_url = attachment.url if attachment else attachment_url
+    await handler.handle_poll_interaction(interaction, question, resolved_attachment_url, custom_color)
 
 
 @bot.tree.command(name="confess_setup", description="Setup channel confession dan audit")

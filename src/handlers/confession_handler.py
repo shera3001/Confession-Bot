@@ -22,7 +22,7 @@ class ConfessionModal(discord.ui.Modal):
         required=False,
     )
     custom_color = discord.ui.TextInput(
-        label="Custom Color (user premium only)",
+        label="Custom Color (optional)",
         style=discord.TextStyle.short,
         max_length=32,
         required=False,
@@ -53,6 +53,38 @@ class ConfessionModal(discord.ui.Modal):
         await self.handler.handle_confession_interaction(interaction, content, attachment, custom_color)
 
 
+class PollModal(discord.ui.Modal):
+    question = discord.ui.TextInput(
+        label="Question",
+        style=discord.TextStyle.paragraph,
+        max_length=1800,
+        required=True,
+    )
+    attachment_url = discord.ui.TextInput(
+        label="Attachment (optional)",
+        style=discord.TextStyle.short,
+        max_length=400,
+        required=False,
+    )
+    custom_color = discord.ui.TextInput(
+        label="Custom Color (optional)",
+        style=discord.TextStyle.short,
+        max_length=32,
+        required=False,
+        placeholder="Ex: ff0000, #ff0000, or red",
+    )
+
+    def __init__(self, handler: "ConfessionHandler"):
+        super().__init__(title="Create a Poll")
+        self.handler = handler
+
+    async def on_submit(self, interaction: discord.Interaction):
+        question = str(self.question).strip()
+        attachment = str(self.attachment_url).strip() or None
+        custom_color = str(self.custom_color).strip() or None
+        await self.handler.handle_poll_interaction(interaction, question, attachment, custom_color)
+
+
 class ConfessionPanelView(discord.ui.View):
     def __init__(self, handler: "ConfessionHandler"):
         super().__init__(timeout=None)
@@ -62,6 +94,13 @@ class ConfessionPanelView(discord.ui.View):
     async def submit_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         try:
             await interaction.response.send_modal(ConfessionModal(self.handler, mode="confess"))
+        except discord.NotFound:
+            return
+
+    @discord.ui.button(label="Submit a poll!", style=discord.ButtonStyle.green, custom_id="poll_submit")
+    async def poll_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        try:
+            await interaction.response.send_modal(PollModal(self.handler))
         except discord.NotFound:
             return
 
@@ -464,6 +503,107 @@ class ConfessionHandler:
             return
 
         await self._respond_interaction(interaction, "Reply anonim sudah dikirim ke thread confession.")
+
+    async def _post_poll(
+        self,
+        guild: discord.Guild,
+        author: discord.Member,
+        question: str,
+        attachment_url: Optional[str] = None,
+        custom_color: Optional[str] = None,
+    ) -> Optional[discord.Message]:
+        confession_channel_id = getattr(self.bot, "confession_channel_id", None)
+        if not confession_channel_id:
+            return None
+
+        confession_channel = guild.get_channel(confession_channel_id)
+        if confession_channel is None:
+            return None
+
+        poll_id = self._next_id()
+        embed_color = self._resolve_custom_color(custom_color, discord.Color.green())
+        if embed_color is None:
+            raise ValueError("Invalid custom color")
+
+        embed = self._build_embed(
+            f"Anonymous Poll (#{poll_id})",
+            question,
+            embed_color,
+            attachment_url,
+        )
+        sent_msg = await confession_channel.send(embed=embed)
+        self._audit_map[poll_id] = author.id
+
+        await self._send_audit_log(
+            guild,
+            author,
+            poll_id,
+            question,
+            sent_msg,
+            kind="Anonymous Poll",
+        )
+        return sent_msg
+
+    async def handle_poll(self, ctx, question: str, custom_color: Optional[str] = None):
+        if not self.is_open:
+            await ctx.send("Poll sedang ditutup.")
+            return
+
+        if not getattr(self.bot, "confession_channel_id", None):
+            await ctx.send("Channel confession belum diset. Jalankan !confess_setup dulu.")
+            return
+
+        try:
+            sent_msg = await self._post_poll(ctx.guild, ctx.author, question, custom_color=custom_color)
+        except ValueError:
+            await ctx.send("Custom color tidak valid. Gunakan hex seperti #ff0000 atau nama warna seperti red.")
+            return
+        if sent_msg is None:
+            await ctx.send("Confession channel tidak ditemukan. Cek setup channel.")
+            return
+
+        await ctx.send("Poll sudah dikirim. Ini anonim dan rahasia.", delete_after=8)
+
+    async def handle_poll_interaction(
+        self,
+        interaction: discord.Interaction,
+        question: str,
+        attachment_url: Optional[str],
+        custom_color: Optional[str] = None,
+    ):
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except discord.NotFound:
+                return
+
+        if not interaction.guild:
+            await self._respond_interaction(interaction, "Poll hanya bisa di server.")
+            return
+
+        if not self.is_open:
+            await self._respond_interaction(interaction, "Poll sedang ditutup.")
+            return
+
+        try:
+            sent_msg = await self._post_poll(
+                interaction.guild,
+                interaction.user,
+                question,
+                attachment_url,
+                custom_color,
+            )
+        except ValueError:
+            await self._respond_interaction(
+                interaction,
+                "Custom color tidak valid. Gunakan hex seperti #ff0000 atau nama warna seperti red.",
+            )
+            return
+        if sent_msg is None:
+            await self._respond_interaction(interaction, "Confession channel belum siap. Jalankan !confess_setup dulu.")
+            return
+
+        await self._respond_interaction(interaction, "Poll sudah dikirim. Ini bersifat anonim dan rahasia tinggi.")
 
     async def handle_reply_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
