@@ -6,6 +6,8 @@ import discord
 
 
 CONFESSION_ID_RE = re.compile(r"#(\d+)")
+MAX_ATTACHMENT_SIZE_BYTES = 500 * 1024 * 1024
+ALLOWED_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
 
 class ConfessionModal(discord.ui.Modal):
@@ -117,6 +119,13 @@ class ConfessionItemView(discord.ui.View):
         except discord.NotFound:
             return
 
+    @discord.ui.button(label="Create a poll!", style=discord.ButtonStyle.green, custom_id="poll_submit_item")
+    async def poll_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        try:
+            await interaction.response.send_modal(PollModal(self.handler))
+        except discord.NotFound:
+            return
+
     @discord.ui.button(label="Reply", style=discord.ButtonStyle.secondary, custom_id="confess_reply")
     async def reply_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         source_message_id = interaction.message.id if interaction.message else None
@@ -162,11 +171,30 @@ class ConfessionHandler:
         embed.set_footer(text="Anonim • Rahasia tinggi")
         if attachment_url:
             lower_attachment = attachment_url.lower().split("?", 1)[0]
-            if lower_attachment.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+            if lower_attachment.endswith(ALLOWED_IMAGE_EXTENSIONS):
                 embed.set_image(url=attachment_url)
             else:
                 embed.add_field(name="Attachment", value=attachment_url, inline=False)
         return embed
+
+    def _resolve_attachment_url(
+        self,
+        attachment: Optional[discord.Attachment],
+        attachment_url: Optional[str],
+    ) -> tuple[Optional[str], Optional[str]]:
+        if attachment is not None:
+            if attachment.size > MAX_ATTACHMENT_SIZE_BYTES:
+                return None, "Ukuran file terlalu besar. Maksimal 500MB."
+
+            content_type = (attachment.content_type or "").lower()
+            filename = (attachment.filename or "").lower()
+            is_image = content_type.startswith("image/") or filename.endswith(ALLOWED_IMAGE_EXTENSIONS)
+            if not is_image:
+                return None, "Hanya file gambar yang didukung (png/jpg/jpeg/gif/webp)."
+
+            return attachment.url, None
+
+        return attachment_url, None
 
     def _resolve_custom_color(
         self,
@@ -420,6 +448,7 @@ class ConfessionHandler:
         confession_message: str,
         attachment_url: Optional[str],
         custom_color: Optional[str] = None,
+        attachment: Optional[discord.Attachment] = None,
     ):
         if not interaction.response.is_done():
             try:
@@ -435,12 +464,17 @@ class ConfessionHandler:
             await self._respond_interaction(interaction, "Confession sedang ditutup.")
             return
 
+        resolved_attachment_url, attachment_error = self._resolve_attachment_url(attachment, attachment_url)
+        if attachment_error:
+            await self._respond_interaction(interaction, attachment_error)
+            return
+
         try:
             sent_msg = await self._post_confession(
                 interaction.guild,
                 interaction.user,
                 confession_message,
-                attachment_url,
+                resolved_attachment_url,
                 custom_color,
             )
         except ValueError:
@@ -531,7 +565,7 @@ class ConfessionHandler:
             embed_color,
             attachment_url,
         )
-        sent_msg = await confession_channel.send(embed=embed)
+        sent_msg = await confession_channel.send(embed=embed, view=ConfessionItemView(self))
         self._audit_map[poll_id] = author.id
 
         await self._send_audit_log(
@@ -570,6 +604,7 @@ class ConfessionHandler:
         question: str,
         attachment_url: Optional[str],
         custom_color: Optional[str] = None,
+        attachment: Optional[discord.Attachment] = None,
     ):
         if not interaction.response.is_done():
             try:
@@ -585,12 +620,17 @@ class ConfessionHandler:
             await self._respond_interaction(interaction, "Poll sedang ditutup.")
             return
 
+        resolved_attachment_url, attachment_error = self._resolve_attachment_url(attachment, attachment_url)
+        if attachment_error:
+            await self._respond_interaction(interaction, attachment_error)
+            return
+
         try:
             sent_msg = await self._post_poll(
                 interaction.guild,
                 interaction.user,
                 question,
-                attachment_url,
+                resolved_attachment_url,
                 custom_color,
             )
         except ValueError:

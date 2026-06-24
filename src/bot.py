@@ -139,8 +139,13 @@ async def slash_confess(
     attachment_url: Optional[str] = None,
     custom_color: Optional[str] = None,
 ):
-    resolved_attachment_url = attachment.url if attachment else attachment_url
-    await handler.handle_confession_interaction(interaction, confession, resolved_attachment_url, custom_color)
+    await handler.handle_confession_interaction(
+        interaction,
+        confession,
+        attachment_url,
+        custom_color,
+        attachment,
+    )
 
 
 @bot.tree.command(name="poll", description="Buat poll anonim")
@@ -157,8 +162,13 @@ async def slash_poll(
     attachment_url: Optional[str] = None,
     custom_color: Optional[str] = None,
 ):
-    resolved_attachment_url = attachment.url if attachment else attachment_url
-    await handler.handle_poll_interaction(interaction, question, resolved_attachment_url, custom_color)
+    await handler.handle_poll_interaction(
+        interaction,
+        question,
+        attachment_url,
+        custom_color,
+        attachment,
+    )
 
 
 @bot.tree.command(name="confess_setup", description="Setup channel confession dan audit")
