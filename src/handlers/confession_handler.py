@@ -590,9 +590,9 @@ class ConfessionHandler:
             attachment_url,
         )
         
-        # Add each option as a field with vote count
+        # Add each option as a field with formatted vote display
         for idx, opt in enumerate(options):
-            embed.add_field(name=opt, value="0 votes", inline=False)
+            embed.add_field(name=f"📊 {opt}", value="0 votes", inline=False)
         
         sent_msg = await confession_channel.send(embed=embed)
         # store poll state
@@ -620,7 +620,7 @@ class ConfessionHandler:
         view = discord.ui.View(timeout=None)
 
         for idx, opt in enumerate(options):
-            button = discord.ui.Button(label=f"Vote: {opt}", style=discord.ButtonStyle.primary, custom_id=f"poll_vote_{message_id}_{idx}")
+            button = discord.ui.Button(label=f"Vote: {opt}", style=discord.ButtonStyle.primary, custom_id=f"poll_vote_{message_id}_{idx}", emoji="✓")
 
             async def _cb(interaction: discord.Interaction, _idx=idx, _mid=message_id):
                 await self._handle_poll_vote(interaction, _mid, _idx)
@@ -667,12 +667,18 @@ class ConfessionHandler:
 
         if poll_msg and poll_msg.embeds:
             embed = poll_msg.embeds[0]
-            # update fields with new vote counts
+            # update fields with new vote counts and percentage
             if embed.fields:
                 new_fields = []
+                total_votes = sum(counts)
                 for i, (field) in enumerate(embed.fields):
                     if i < len(options):
-                        new_fields.append({"name": options[i], "value": f"{counts[i]} votes", "inline": False})
+                        vote_count = counts[i]
+                        percentage = (vote_count / total_votes * 100) if total_votes > 0 else 0
+                        value_text = f"{vote_count} vote{'s' if vote_count != 1 else ''}"
+                        if total_votes > 0:
+                            value_text += f" ({percentage:.0f}%)"
+                        new_fields.append({"name": f"📊 {options[i]}", "value": value_text, "inline": False})
                     else:
                         new_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
                 # Recreate fields
