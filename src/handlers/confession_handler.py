@@ -60,6 +60,13 @@ class PollModal(discord.ui.Modal):
         max_length=1800,
         required=True,
     )
+    options = discord.ui.TextInput(
+        label="Options (one per line)",
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+        required=True,
+        placeholder="Option A\nOption B\nOption C",
+    )
     attachment_url = discord.ui.TextInput(
         label="Attachment (optional)",
         style=discord.TextStyle.short,
@@ -132,6 +139,10 @@ class ConfessionHandler:
         self.bot.confession_channel_id = int(os.getenv("CONFESSION_CHANNEL_ID", "0") or 0)
         self.bot.audit_channel_id = int(os.getenv("AUDIT_CHANNEL_ID", "0") or 0)
         self._pending_submissions = {}
+        # Poll state: message_id -> list[str] (options)
+        self._poll_options: dict[int, list[str]] = {}
+        # Poll votes: message_id -> dict[user_id -> option_index]
+        self._poll_votes: dict[int, dict[int, int]] = {}
 
     def get_persistent_view(self) -> discord.ui.View:
         return ConfessionPanelView(self)
@@ -553,6 +564,7 @@ class ConfessionHandler:
         question: str,
         attachment_url: Optional[str] = None,
         custom_color: Optional[str] = None,
+        options: Optional[list[str]] = None,
     ) -> Optional[discord.Message]:
         confession_channel_id = getattr(self.bot, "confession_channel_id", None)
         if not confession_channel_id:
@@ -567,13 +579,29 @@ class ConfessionHandler:
         if embed_color is None:
             raise ValueError("Invalid custom color")
 
+        # Build embed including options and initial counts
+        if options is None:
+            options = ["Yes", "No"]
+        description_lines = [question, "\n"]
+        for idx, opt in enumerate(options, start=1):
+            description_lines.append(f"{idx}. {opt} — 0 votes")
+
         embed = self._build_embed(
             f"Anonymous Poll (#{poll_id})",
-            question,
+            "\n".join(description_lines),
             embed_color,
             attachment_url,
         )
-        sent_msg = await confession_channel.send(embed=embed, view=ConfessionItemView(self))
+        sent_msg = await confession_channel.send(embed=embed)
+        # store poll state
+        self._poll_options[sent_msg.id] = options
+        self._poll_votes[sent_msg.id] = {}
+        # attach interactive vote buttons
+        view = self._make_poll_view(sent_msg.id, options)
+        try:
+            await sent_msg.edit(view=view)
+        except Exception:
+            pass
         self._audit_map[poll_id] = author.id
 
         await self._send_audit_log(
@@ -585,6 +613,78 @@ class ConfessionHandler:
             kind="Anonymous Poll",
         )
         return sent_msg
+
+    def _make_poll_view(self, message_id: int, options: list[str]) -> discord.ui.View:
+        view = discord.ui.View(timeout=None)
+
+        for idx, opt in enumerate(options):
+            button = discord.ui.Button(label="Vote", style=discord.ButtonStyle.primary)
+
+            async def _cb(interaction: discord.Interaction, _idx=idx, _mid=message_id):
+                await self._handle_poll_vote(interaction, _mid, _idx)
+
+            button.callback = _cb
+            view.add_item(button)
+
+        return view
+
+    async def _handle_poll_vote(self, interaction: discord.Interaction, message_id: int, option_index: int):
+        # ensure poll exists
+        options = self._poll_options.get(message_id)
+        if not options:
+            try:
+                await interaction.response.send_message("Poll tidak ditemukan.", ephemeral=True)
+            except Exception:
+                pass
+            return
+
+        user_id = interaction.user.id
+        user_votes = self._poll_votes.setdefault(message_id, {})
+        previous = user_votes.get(user_id)
+        if previous is not None and previous == option_index:
+            try:
+                await interaction.response.send_message("You already have that option selected", ephemeral=True)
+            except Exception:
+                pass
+            return
+
+        user_votes[user_id] = option_index
+
+        # recompute counts
+        counts = [0] * len(options)
+        for v in user_votes.values():
+            if 0 <= v < len(options):
+                counts[v] += 1
+
+        # update embed
+        channel = interaction.channel
+        try:
+            poll_msg = await channel.fetch_message(message_id)
+        except Exception:
+            poll_msg = None
+
+        if poll_msg and poll_msg.embeds:
+            embed = poll_msg.embeds[0]
+            # rebuild description: original question then option counts
+            lines = embed.description.splitlines() if embed.description else []
+            # assume first line is question
+            if lines:
+                question_line = lines[0]
+            else:
+                question_line = "Poll"
+            new_lines = [question_line, "\n"]
+            for i, opt in enumerate(options, start=1):
+                new_lines.append(f"{i}. {opt} — {counts[i-1]} votes")
+            embed.description = "\n".join(new_lines)
+            try:
+                await poll_msg.edit(embed=embed)
+            except Exception:
+                pass
+
+        try:
+            await interaction.response.send_message("Vote recorded.", ephemeral=True)
+        except Exception:
+            return
 
     async def handle_poll(
         self,
