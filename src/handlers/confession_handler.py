@@ -1,6 +1,5 @@
 import os
 import re
-import time
 from typing import Optional
 
 import discord
@@ -9,9 +8,6 @@ import discord
 CONFESSION_ID_RE = re.compile(r"#(\d+)")
 MAX_ATTACHMENT_SIZE_BYTES = 500 * 1024 * 1024
 ALLOWED_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
-SUBMISSION_TIMEOUT_SECONDS = 180
-
-
 class ConfessionModal(discord.ui.Modal):
     confession_content = discord.ui.TextInput(
         label="Confession Content",
@@ -96,11 +92,11 @@ class ConfessionPanelView(discord.ui.View):
 
     @discord.ui.button(label="Submit a confession!", style=discord.ButtonStyle.blurple, custom_id="confess_submit")
     async def submit_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        await self.handler.start_direct_submission(interaction, mode="confess")
+        await interaction.response.send_modal(ConfessionModal(self.handler, mode="confess"))
 
     @discord.ui.button(label="Submit a poll!", style=discord.ButtonStyle.green, custom_id="poll_submit")
     async def poll_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        await self.handler.start_direct_submission(interaction, mode="poll")
+        await interaction.response.send_modal(PollModal(self.handler))
 
 
 class ConfessionItemView(discord.ui.View):
@@ -110,11 +106,11 @@ class ConfessionItemView(discord.ui.View):
 
     @discord.ui.button(label="Submit a confession!", style=discord.ButtonStyle.blurple, custom_id="confess_submit_item")
     async def submit_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        await self.handler.start_direct_submission(interaction, mode="confess")
+        await interaction.response.send_modal(ConfessionModal(self.handler, mode="confess"))
 
     @discord.ui.button(label="Create a poll!", style=discord.ButtonStyle.green, custom_id="poll_submit_item")
     async def poll_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        await self.handler.start_direct_submission(interaction, mode="poll")
+        await interaction.response.send_modal(PollModal(self.handler))
 
     @discord.ui.button(label="Reply", style=discord.ButtonStyle.secondary, custom_id="confess_reply")
     async def reply_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
@@ -233,114 +229,8 @@ class ConfessionHandler:
         except discord.NotFound:
             return
 
-    async def start_direct_submission(self, interaction: discord.Interaction, mode: str):
-        if not interaction.guild:
-            await self._respond_interaction(interaction, "Fitur ini hanya bisa di server.")
-            return
-
-        if not self.is_open:
-            await self._respond_interaction(interaction, "Submission sedang ditutup.")
-            return
-
-        confession_channel_id = getattr(self.bot, "confession_channel_id", None)
-        if not confession_channel_id:
-            await self._respond_interaction(interaction, "Channel confession belum diset. Jalankan !confess_setup dulu.")
-            return
-
-        existing = self._pending_submissions.get(interaction.user.id)
-        if existing and time.time() <= existing.get("expires_at", 0):
-            same_context = (
-                existing.get("guild_id") == interaction.guild.id
-                and existing.get("channel_id") == interaction.channel_id
-                and existing.get("mode") == mode
-            )
-            if same_context:
-                try:
-                    if not interaction.response.is_done():
-                        await interaction.response.defer()
-                except discord.NotFound:
-                    return
-                return
-
-        self._pending_submissions[interaction.user.id] = {
-            "mode": mode,
-            "guild_id": interaction.guild.id,
-            "channel_id": interaction.channel_id,
-            "expires_at": time.time() + SUBMISSION_TIMEOUT_SECONDS,
-        }
-
-        kind = "confession" if mode == "confess" else "poll"
-        await self._respond_interaction(
-            interaction,
-            f"Kirim isi {kind} sekarang di channel ini (boleh lampirkan gambar file). "
-            f"Bot akan anonimkan dan hapus pesan asli kamu. Timeout {SUBMISSION_TIMEOUT_SECONDS // 60} menit.",
-        )
-
     async def handle_pending_submission_message(self, message: discord.Message) -> bool:
-        if message.author.bot or not message.guild:
-            return False
-
-        pending = self._pending_submissions.get(message.author.id)
-        if not pending:
-            return False
-
-        if pending["guild_id"] != message.guild.id or pending["channel_id"] != message.channel.id:
-            return False
-
-        if time.time() > pending["expires_at"]:
-            self._pending_submissions.pop(message.author.id, None)
-            await message.channel.send(
-                f"{message.author.mention} waktu submit habis, klik tombol lagi ya.",
-                delete_after=6,
-            )
-            return
-
-        content = message.content.strip()
-        if not content:
-            await message.channel.send(
-                f"{message.author.mention} isi pesan tidak boleh kosong.",
-                delete_after=6,
-            )
-            return True
-
-        attachment = message.attachments[0] if message.attachments else None
-        resolved_attachment_url, attachment_error = self._resolve_attachment_url(attachment, None)
-        if attachment_error:
-            await message.channel.send(f"{message.author.mention} {attachment_error}", delete_after=8)
-            self._pending_submissions.pop(message.author.id, None)
-            return True
-
-        mode = pending["mode"]
-        if mode == "confess":
-            sent_msg = await self._post_confession(
-                message.guild,
-                message.author,
-                content,
-                attachment_url=resolved_attachment_url,
-            )
-        else:
-            sent_msg = await self._post_poll(
-                message.guild,
-                message.author,
-                content,
-                attachment_url=resolved_attachment_url,
-            )
-
-        self._pending_submissions.pop(message.author.id, None)
-        if sent_msg is None:
-            await message.channel.send("Confession channel tidak ditemukan. Cek setup channel.", delete_after=8)
-            return True
-
-        try:
-            await message.delete()
-        except Exception:
-            pass
-
-        await message.channel.send(
-            f"{message.author.mention} {mode} anonim berhasil dikirim.",
-            delete_after=6,
-        )
-        return True
+        return False
 
     async def _notify_original_author(
         self,
