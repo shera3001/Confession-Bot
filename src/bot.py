@@ -52,6 +52,8 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
+    if await handler.handle_pending_submission_message(message):
+        return
     await handler.handle_reply_message(message)
     await bot.process_commands(message)
 
