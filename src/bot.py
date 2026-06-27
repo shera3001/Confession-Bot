@@ -213,8 +213,7 @@ async def slash_confess_setup(
         return
     if audit_channel is None:
         audit_channel = confession_channel
-    handler.bot.confession_channel_id = confession_channel.id
-    handler.bot.audit_channel_id = audit_channel.id
+    handler.set_guild_channels(interaction.guild.id, confession_channel.id, audit_channel.id)
     await interaction.response.send_message(
         f"Setup selesai. Channel confession: {confession_channel.mention}, audit: {audit_channel.mention}",
         ephemeral=True,
@@ -226,14 +225,15 @@ async def slash_confess_panel(interaction: discord.Interaction):
     if not await ensure_mod_interaction(interaction):
         return
 
-    if not getattr(handler.bot, "confession_channel_id", None):
+    confession_channel_id = handler.get_confession_channel_id(interaction.guild.id)
+    if not confession_channel_id:
         await interaction.response.send_message(
             "Set channel dulu pakai /confess_setup.",
             ephemeral=True,
         )
         return
 
-    confession_channel = interaction.guild.get_channel(handler.bot.confession_channel_id)
+    confession_channel = interaction.guild.get_channel(confession_channel_id)
     if confession_channel is None:
         await interaction.response.send_message(
             "Confession channel tidak ditemukan. Jalankan setup ulang.",
@@ -254,7 +254,7 @@ async def slash_confess_panel(interaction: discord.Interaction):
 async def slash_confess_close(interaction: discord.Interaction):
     if not await ensure_mod_interaction(interaction):
         return
-    handler.is_open = False
+    handler.set_guild_open(interaction.guild.id, False)
     await interaction.response.send_message("Confession submission ditutup.", ephemeral=True)
 
 
@@ -262,7 +262,7 @@ async def slash_confess_close(interaction: discord.Interaction):
 async def slash_confess_open(interaction: discord.Interaction):
     if not await ensure_mod_interaction(interaction):
         return
-    handler.is_open = True
+    handler.set_guild_open(interaction.guild.id, True)
     await interaction.response.send_message("Confession submission dibuka.", ephemeral=True)
 
 

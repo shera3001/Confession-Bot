@@ -176,44 +176,100 @@ class PollVoteView(discord.ui.View):
 class ConfessionHandler:
     def __init__(self, bot):
         self.bot = bot
-        self.is_open = True
         self._counter = 0
         self._audit_map = {}
 
-        self.bot.confession_channel_id = int(os.getenv("CONFESSION_CHANNEL_ID", "0") or 0)
-        self.bot.audit_channel_id = int(os.getenv("AUDIT_CHANNEL_ID", "0") or 0)
+        # Per-guild config: guild_id -> {confession_channel_id, audit_channel_id, is_open}
+        self._guild_config: dict[int, dict] = {}
+
+        # Seed from env vars for backward-compat (single-server legacy setup)
+        _legacy_confession = int(os.getenv("CONFESSION_CHANNEL_ID", "0") or 0)
+        _legacy_audit = int(os.getenv("AUDIT_CHANNEL_ID", "0") or 0)
+        self._legacy_confession_channel_id = _legacy_confession
+        self._legacy_audit_channel_id = _legacy_audit or _legacy_confession
+
         self._pending_submissions = {}
         # Poll state: message_id -> list[str] (options)
         self._poll_options: dict[int, list[str]] = {}
         # Poll votes: message_id -> dict[user_id -> option_index]
         self._poll_votes: dict[int, dict[int, int]] = {}
-        self._load_polls()
+        self._load_data()
 
-    def _load_polls(self):
-        filepath = "polls.json"
-        if not os.path.exists(filepath):
+    # ── Guild config helpers ─────────────────────────────────────────
+
+    def _get_guild_config(self, guild_id: int) -> dict:
+        if guild_id not in self._guild_config:
+            self._guild_config[guild_id] = {
+                "confession_channel_id": 0,
+                "audit_channel_id": 0,
+                "is_open": True,
+            }
+        return self._guild_config[guild_id]
+
+    def get_confession_channel_id(self, guild_id: int) -> int:
+        return self._get_guild_config(guild_id).get("confession_channel_id", 0)
+
+    def get_audit_channel_id(self, guild_id: int) -> int:
+        return self._get_guild_config(guild_id).get("audit_channel_id", 0)
+
+    def is_guild_open(self, guild_id: int) -> bool:
+        return self._get_guild_config(guild_id).get("is_open", True)
+
+    def set_guild_open(self, guild_id: int, value: bool):
+        self._get_guild_config(guild_id)["is_open"] = value
+        self._save_data()
+
+    def set_guild_channels(self, guild_id: int, confession_channel_id: int, audit_channel_id: int):
+        cfg = self._get_guild_config(guild_id)
+        cfg["confession_channel_id"] = confession_channel_id
+        cfg["audit_channel_id"] = audit_channel_id
+        self._save_data()
+
+    def _try_legacy_assign(self, guild_id: int):
+        """Auto-assign env-var channels to this guild if no config exists yet."""
+        if not self._legacy_confession_channel_id:
             return
+        cfg = self._get_guild_config(guild_id)
+        if not cfg["confession_channel_id"]:
+            cfg["confession_channel_id"] = self._legacy_confession_channel_id
+            cfg["audit_channel_id"] = self._legacy_audit_channel_id
+            self._legacy_confession_channel_id = 0
+            self._legacy_audit_channel_id = 0
+            self._save_data()
+
+    # ── Persistence ──────────────────────────────────────────────────
+
+    def _load_data(self):
+        filepath = "bot_data.json"
+        if not os.path.exists(filepath):
+            filepath = "polls.json"
+            if not os.path.exists(filepath):
+                return
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            
+
             raw_options = data.get("options", {})
             self._poll_options = {int(k): v for k, v in raw_options.items()}
-            
+
             raw_votes = data.get("votes", {})
             self._poll_votes = {
                 int(msg_id): {int(user_id): opt_idx for user_id, opt_idx in user_vote.items()}
                 for msg_id, user_vote in raw_votes.items()
             }
-            
+
             self._counter = data.get("counter", self._counter)
             raw_audit = data.get("audit_map", {})
             self._audit_map = {int(k): v for k, v in raw_audit.items()}
-        except Exception as e:
-            print(f"Error loading polls: {e}")
 
-    def _save_polls(self):
-        filepath = "polls.json"
+            raw_guilds = data.get("guild_config", {})
+            for gid, cfg in raw_guilds.items():
+                self._guild_config[int(gid)] = cfg
+        except Exception as e:
+            print(f"Error loading data: {e}")
+
+    def _save_data(self):
+        filepath = "bot_data.json"
         try:
             data = {
                 "options": {str(k): v for k, v in self._poll_options.items()},
@@ -222,12 +278,13 @@ class ConfessionHandler:
                     for msg_id, user_vote in self._poll_votes.items()
                 },
                 "counter": self._counter,
-                "audit_map": {str(k): v for k, v in self._audit_map.items()}
+                "audit_map": {str(k): v for k, v in self._audit_map.items()},
+                "guild_config": {str(gid): cfg for gid, cfg in self._guild_config.items()},
             }
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
         except Exception as e:
-            print(f"Error saving polls: {e}")
+            print(f"Error saving data: {e}")
 
     def get_persistent_view(self) -> discord.ui.View:
         return ConfessionPanelView(self)
@@ -365,7 +422,7 @@ class ConfessionHandler:
         kind: str,
         extra_link_text: Optional[str] = None,
     ):
-        audit_channel_id = getattr(self.bot, "audit_channel_id", None)
+        audit_channel_id = self.get_audit_channel_id(guild.id)
         if not audit_channel_id:
             return
 
@@ -393,7 +450,8 @@ class ConfessionHandler:
         attachment_url: Optional[str] = None,
         custom_color: Optional[str] = None,
     ) -> Optional[discord.Message]:
-        confession_channel_id = getattr(self.bot, "confession_channel_id", None)
+        self._try_legacy_assign(guild.id)
+        confession_channel_id = self.get_confession_channel_id(guild.id)
         if not confession_channel_id:
             return None
 
@@ -414,7 +472,7 @@ class ConfessionHandler:
 
         sent_msg = await confession_channel.send(embed=embed, view=ConfessionItemView(self))
         self._audit_map[confession_id] = author.id
-        self._save_polls()
+        self._save_data()
 
         await self._send_audit_log(
             guild,
@@ -461,7 +519,7 @@ class ConfessionHandler:
         )
         sent_msg = await thread.send(embed=embed)
         self._audit_map[reply_id] = author.id
-        self._save_polls()
+        self._save_data()
 
         await self._send_audit_log(
             guild,
@@ -477,14 +535,14 @@ class ConfessionHandler:
         return sent_msg
 
     async def setup_channels(self, ctx, confession_channel: discord.TextChannel, audit_channel: discord.TextChannel):
-        self.bot.confession_channel_id = confession_channel.id
-        self.bot.audit_channel_id = audit_channel.id
+        self.set_guild_channels(ctx.guild.id, confession_channel.id, audit_channel.id)
         await ctx.send(
             f"Setup selesai. Channel confession: {confession_channel.mention}, audit: {audit_channel.mention}"
         )
 
     async def post_panel(self, ctx):
-        confession_channel_id = getattr(self.bot, "confession_channel_id", None)
+        self._try_legacy_assign(ctx.guild.id)
+        confession_channel_id = self.get_confession_channel_id(ctx.guild.id)
         if not confession_channel_id:
             await ctx.send("Set channel dulu pakai !confess_setup #confession #audit")
             return
@@ -510,11 +568,14 @@ class ConfessionHandler:
         attachment: Optional[discord.Attachment] = None,
         attachment_url: Optional[str] = None,
     ):
-        if not self.is_open:
+        guild_id = ctx.guild.id
+        self._try_legacy_assign(guild_id)
+
+        if not self.is_guild_open(guild_id):
             await ctx.send("Confession sedang ditutup.")
             return
 
-        if not getattr(self.bot, "confession_channel_id", None):
+        if not self.get_confession_channel_id(guild_id):
             await ctx.send("Channel confession belum diset. Jalankan !confess_setup dulu.")
             return
 
@@ -546,11 +607,11 @@ class ConfessionHandler:
         await ctx.send("Pesan confession sudah dikirim. Ini anonim dan rahasia.", delete_after=8)
 
     async def close_confession(self, ctx):
-        self.is_open = False
+        self.set_guild_open(ctx.guild.id, False)
         await ctx.send("Confession submission ditutup.")
 
     async def open_confession(self, ctx):
-        self.is_open = True
+        self.set_guild_open(ctx.guild.id, True)
         await ctx.send("Confession submission dibuka.")
 
     async def handle_confession_interaction(
@@ -571,7 +632,10 @@ class ConfessionHandler:
             await self._respond_interaction(interaction, "Confession hanya bisa di server.")
             return
 
-        if not self.is_open:
+        guild_id = interaction.guild.id
+        self._try_legacy_assign(guild_id)
+
+        if not self.is_guild_open(guild_id):
             await self._respond_interaction(interaction, "Confession sedang ditutup.")
             return
 
@@ -619,11 +683,15 @@ class ConfessionHandler:
             await self._respond_interaction(interaction, "Reply hanya bisa di server.")
             return
 
-        if not source_message_id or not getattr(self.bot, "confession_channel_id", None):
+        guild_id = interaction.guild.id
+        self._try_legacy_assign(guild_id)
+        confession_channel_id = self.get_confession_channel_id(guild_id)
+
+        if not source_message_id or not confession_channel_id:
             await self._respond_interaction(interaction, "Pesan confession sumber tidak valid.")
             return
 
-        confession_channel = interaction.guild.get_channel(self.bot.confession_channel_id)
+        confession_channel = interaction.guild.get_channel(confession_channel_id)
         if confession_channel is None:
             await self._respond_interaction(interaction, "Confession channel tidak ditemukan.")
             return
@@ -660,7 +728,8 @@ class ConfessionHandler:
         custom_color: Optional[str] = None,
         options: Optional[list[str]] = None,
     ) -> Optional[discord.Message]:
-        confession_channel_id = getattr(self.bot, "confession_channel_id", None)
+        self._try_legacy_assign(guild.id)
+        confession_channel_id = self.get_confession_channel_id(guild.id)
         if not confession_channel_id:
             return None
 
@@ -695,7 +764,7 @@ class ConfessionHandler:
         self._poll_options[sent_msg.id] = options
         self._poll_votes[sent_msg.id] = {}
         self._audit_map[poll_id] = author.id
-        self._save_polls()
+        self._save_data()
         
         # attach interactive vote buttons
         view = self._make_poll_view(sent_msg.id, options)
@@ -821,11 +890,14 @@ class ConfessionHandler:
         attachment_url: Optional[str] = None,
         options: Optional[list[str]] = None,
     ):
-        if not self.is_open:
+        guild_id = ctx.guild.id
+        self._try_legacy_assign(guild_id)
+
+        if not self.is_guild_open(guild_id):
             await ctx.send("Poll sedang ditutup.")
             return
 
-        if not getattr(self.bot, "confession_channel_id", None):
+        if not self.get_confession_channel_id(guild_id):
             await ctx.send("Channel confession belum diset. Jalankan !confess_setup dulu.")
             return
 
@@ -871,7 +943,10 @@ class ConfessionHandler:
             await self._respond_interaction(interaction, "Poll hanya bisa di server.")
             return
 
-        if not self.is_open:
+        guild_id = interaction.guild.id
+        self._try_legacy_assign(guild_id)
+
+        if not self.is_guild_open(guild_id):
             await self._respond_interaction(interaction, "Poll sedang ditutup.")
             return
 
@@ -905,13 +980,16 @@ class ConfessionHandler:
         if message.author.bot or not message.guild:
             return
 
-        if not self.is_open:
+        guild_id = message.guild.id
+        self._try_legacy_assign(guild_id)
+
+        if not self.is_guild_open(guild_id):
             return
 
         if message.reference is None or message.reference.message_id is None:
             return
 
-        confession_channel_id = getattr(self.bot, "confession_channel_id", None)
+        confession_channel_id = self.get_confession_channel_id(guild_id)
         if not confession_channel_id or message.channel.id != confession_channel_id:
             return
 
