@@ -16,11 +16,12 @@ class ConfessionModal(discord.ui.Modal):
         max_length=1800,
         required=True,
     )
-    file_upload = discord.ui.FileUpload(
-        custom_id="attachment",
+    attachment_url = discord.ui.TextInput(
+        label="Link Gambar (opsional)",
+        style=discord.TextStyle.short,
+        max_length=500,
         required=False,
-        min_values=0,
-        max_values=1,
+        placeholder="Paste URL gambar (png/jpg/gif/webp)",
     )
     custom_color = discord.ui.TextInput(
         label="Warna Embed (opsional)",
@@ -39,24 +40,23 @@ class ConfessionModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         content = str(self.confession_content).strip()
         custom_color = str(self.custom_color).strip() or None
-        attachment = self.file_upload.values[0] if self.file_upload.values else None
+        attachment_url = str(self.attachment_url).strip() or None
 
         if self.mode == "reply":
             await self.handler.handle_reply_from_interaction(
                 interaction,
                 reply_content=content,
+                attachment_url=attachment_url,
                 custom_color=custom_color,
                 source_message_id=self.source_message_id,
-                attachment=attachment,
             )
             return
 
         await self.handler.handle_confession_interaction(
             interaction,
             content,
-            attachment_url=None,
+            attachment_url=attachment_url,
             custom_color=custom_color,
-            attachment=attachment,
         )
 
 
@@ -68,17 +68,18 @@ class PollModal(discord.ui.Modal):
         required=True,
     )
     options = discord.ui.TextInput(
-        label="Options (one per line)",
+        label="Opsi (satu per baris)",
         style=discord.TextStyle.paragraph,
         max_length=1000,
         required=True,
-        placeholder="Option A\nOption B\nOption C",
+        placeholder="Opsi A\nOpsi B\nOpsi C",
     )
-    file_upload = discord.ui.FileUpload(
-        custom_id="attachment",
+    attachment_url = discord.ui.TextInput(
+        label="Link Gambar (opsional)",
+        style=discord.TextStyle.short,
+        max_length=500,
         required=False,
-        min_values=0,
-        max_values=1,
+        placeholder="Paste URL gambar (png/jpg/gif/webp)",
     )
     custom_color = discord.ui.TextInput(
         label="Warna Embed (opsional)",
@@ -96,7 +97,7 @@ class PollModal(discord.ui.Modal):
         question = str(self.question).strip()
         options_text = str(self.options).strip()
         custom_color = str(self.custom_color).strip() or None
-        attachment = self.file_upload.values[0] if self.file_upload.values else None
+        attachment_url = str(self.attachment_url).strip() or None
 
         options = [opt.strip() for opt in options_text.split("\n") if opt.strip()]
         if not options:
@@ -105,9 +106,8 @@ class PollModal(discord.ui.Modal):
         await self.handler.handle_poll_interaction(
             interaction,
             question,
-            attachment_url=None,
+            attachment_url=attachment_url,
             custom_color=custom_color,
-            attachment=attachment,
             options=options,
         )
 
