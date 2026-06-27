@@ -1,5 +1,6 @@
 import os
 import re
+import json
 from typing import Optional
 
 import discord
@@ -15,11 +16,11 @@ class ConfessionModal(discord.ui.Modal):
         max_length=1800,
         required=True,
     )
-    attachment_url = discord.ui.TextInput(
-        label="Attachment URL (optional)",
-        style=discord.TextStyle.short,
-        max_length=400,
+    file_upload = discord.ui.FileUpload(
+        custom_id="attachment",
         required=False,
+        min_values=0,
+        max_values=1,
     )
     custom_color = discord.ui.TextInput(
         label="Custom Color (optional)",
@@ -37,20 +38,26 @@ class ConfessionModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         content = str(self.confession_content).strip()
-        attachment = str(self.attachment_url).strip() or None
         custom_color = str(self.custom_color).strip() or None
+        attachment = self.file_upload.values[0] if self.file_upload.values else None
 
         if self.mode == "reply":
             await self.handler.handle_reply_from_interaction(
                 interaction,
-                content,
-                attachment,
-                custom_color,
-                self.source_message_id,
+                reply_content=content,
+                custom_color=custom_color,
+                source_message_id=self.source_message_id,
+                attachment=attachment,
             )
             return
 
-        await self.handler.handle_confession_interaction(interaction, content, attachment, custom_color)
+        await self.handler.handle_confession_interaction(
+            interaction,
+            content,
+            attachment_url=None,
+            custom_color=custom_color,
+            attachment=attachment,
+        )
 
 
 class PollModal(discord.ui.Modal):
@@ -67,11 +74,11 @@ class PollModal(discord.ui.Modal):
         required=True,
         placeholder="Option A\nOption B\nOption C",
     )
-    attachment_url = discord.ui.TextInput(
-        label="Attachment (optional)",
-        style=discord.TextStyle.short,
-        max_length=400,
+    file_upload = discord.ui.FileUpload(
+        custom_id="attachment",
         required=False,
+        min_values=0,
+        max_values=1,
     )
     custom_color = discord.ui.TextInput(
         label="Custom Color (optional)",
@@ -87,9 +94,22 @@ class PollModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         question = str(self.question).strip()
-        attachment = str(self.attachment_url).strip() or None
+        options_text = str(self.options).strip()
         custom_color = str(self.custom_color).strip() or None
-        await self.handler.handle_poll_interaction(interaction, question, attachment, custom_color)
+        attachment = self.file_upload.values[0] if self.file_upload.values else None
+
+        options = [opt.strip() for opt in options_text.split("\n") if opt.strip()]
+        if not options:
+            options = ["Yes", "No"]
+
+        await self.handler.handle_poll_interaction(
+            interaction,
+            question,
+            attachment_url=None,
+            custom_color=custom_color,
+            attachment=attachment,
+            options=options,
+        )
 
 
 class ConfessionPanelView(discord.ui.View):
@@ -143,6 +163,47 @@ class ConfessionHandler:
         self._poll_options: dict[int, list[str]] = {}
         # Poll votes: message_id -> dict[user_id -> option_index]
         self._poll_votes: dict[int, dict[int, int]] = {}
+        self._load_polls()
+
+    def _load_polls(self):
+        filepath = "polls.json"
+        if not os.path.exists(filepath):
+            return
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            raw_options = data.get("options", {})
+            self._poll_options = {int(k): v for k, v in raw_options.items()}
+            
+            raw_votes = data.get("votes", {})
+            self._poll_votes = {
+                int(msg_id): {int(user_id): opt_idx for user_id, opt_idx in user_vote.items()}
+                for msg_id, user_vote in raw_votes.items()
+            }
+            
+            self._counter = data.get("counter", self._counter)
+            raw_audit = data.get("audit_map", {})
+            self._audit_map = {int(k): v for k, v in raw_audit.items()}
+        except Exception as e:
+            print(f"Error loading polls: {e}")
+
+    def _save_polls(self):
+        filepath = "polls.json"
+        try:
+            data = {
+                "options": {str(k): v for k, v in self._poll_options.items()},
+                "votes": {
+                    str(msg_id): {str(user_id): opt_idx for user_id, opt_idx in user_vote.items()}
+                    for msg_id, user_vote in self._poll_votes.items()
+                },
+                "counter": self._counter,
+                "audit_map": {str(k): v for k, v in self._audit_map.items()}
+            }
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving polls: {e}")
 
     def get_persistent_view(self) -> discord.ui.View:
         return ConfessionPanelView(self)
@@ -329,6 +390,7 @@ class ConfessionHandler:
 
         sent_msg = await confession_channel.send(embed=embed, view=ConfessionItemView(self))
         self._audit_map[confession_id] = author.id
+        self._save_polls()
 
         await self._send_audit_log(
             guild,
@@ -348,10 +410,15 @@ class ConfessionHandler:
         content: str,
         attachment_url: Optional[str] = None,
         custom_color: Optional[str] = None,
+        attachment: Optional[discord.Attachment] = None,
     ) -> Optional[discord.Message]:
         origin_confession_id = self._extract_confession_id(source_message)
         if origin_confession_id is None:
             return None
+
+        resolved_attachment_url, attachment_error = self._resolve_attachment_url(attachment, attachment_url)
+        if attachment_error:
+            raise ValueError(attachment_error)
 
         thread_name = f"Confession Replies (#{origin_confession_id})"
         thread = source_message.thread
@@ -366,10 +433,11 @@ class ConfessionHandler:
             f"Anonymous Reply (#{reply_id})",
             content,
             embed_color,
-            attachment_url,
+            resolved_attachment_url,
         )
         sent_msg = await thread.send(embed=embed)
         self._audit_map[reply_id] = author.id
+        self._save_polls()
 
         await self._send_audit_log(
             guild,
@@ -512,9 +580,10 @@ class ConfessionHandler:
         self,
         interaction: discord.Interaction,
         reply_content: str,
-        attachment_url: Optional[str],
-        custom_color: Optional[str],
-        source_message_id: Optional[int],
+        attachment_url: Optional[str] = None,
+        custom_color: Optional[str] = None,
+        source_message_id: Optional[int] = None,
+        attachment: Optional[discord.Attachment] = None,
     ):
         if not interaction.response.is_done():
             try:
@@ -544,12 +613,13 @@ class ConfessionHandler:
                 reply_content,
                 attachment_url,
                 custom_color,
+                attachment,
             )
-        except ValueError:
-            await self._respond_interaction(
-                interaction,
-                "Custom color tidak valid. Gunakan hex seperti #ff0000 atau nama warna seperti red.",
-            )
+        except ValueError as e:
+            err_msg = str(e)
+            if "color" in err_msg.lower():
+                err_msg = "Custom color tidak valid. Gunakan hex seperti #ff0000 atau nama warna seperti red."
+            await self._respond_interaction(interaction, err_msg)
             return
         if sent_msg is None:
             await self._respond_interaction(interaction, "Tombol reply harus dipakai di pesan confession bot.")
@@ -598,13 +668,15 @@ class ConfessionHandler:
         # store poll state
         self._poll_options[sent_msg.id] = options
         self._poll_votes[sent_msg.id] = {}
+        self._audit_map[poll_id] = author.id
+        self._save_polls()
+        
         # attach interactive vote buttons
         view = self._make_poll_view(sent_msg.id, options)
         try:
             await sent_msg.edit(view=view)
         except Exception:
             pass
-        self._audit_map[poll_id] = author.id
 
         await self._send_audit_log(
             guild,
@@ -634,6 +706,22 @@ class ConfessionHandler:
         # ensure poll exists
         options = self._poll_options.get(message_id)
         if not options:
+            # Reconstruct options from the embed fields as a fallback
+            try:
+                poll_msg = interaction.message or await interaction.channel.fetch_message(message_id)
+                if poll_msg and poll_msg.embeds:
+                    embed = poll_msg.embeds[0]
+                    reconstructed = []
+                    for field in embed.fields:
+                        if field.name.startswith("📊 "):
+                            reconstructed.append(field.name[2:])
+                    if reconstructed:
+                        self._poll_options[message_id] = reconstructed
+                        options = reconstructed
+            except Exception:
+                pass
+
+        if not options:
             try:
                 await interaction.response.send_message("Poll tidak ditemukan.", ephemeral=True)
             except Exception:
@@ -645,12 +733,13 @@ class ConfessionHandler:
         previous = user_votes.get(user_id)
         if previous is not None and previous == option_index:
             try:
-                await interaction.response.send_message("You already have that option selected", ephemeral=True)
+                await interaction.response.send_message("Kamu sudah memilih opsi ini.", ephemeral=True)
             except Exception:
                 pass
             return
 
         user_votes[user_id] = option_index
+        self._save_polls()
 
         # recompute counts
         counts = [0] * len(options)
@@ -659,11 +748,13 @@ class ConfessionHandler:
                 counts[v] += 1
 
         # update embed
-        channel = interaction.channel
-        try:
-            poll_msg = await channel.fetch_message(message_id)
-        except Exception:
-            poll_msg = None
+        poll_msg = interaction.message
+        if not poll_msg:
+            try:
+                channel = interaction.channel
+                poll_msg = await channel.fetch_message(message_id)
+            except Exception:
+                poll_msg = None
 
         if poll_msg and poll_msg.embeds:
             embed = poll_msg.embeds[0]
@@ -691,9 +782,12 @@ class ConfessionHandler:
                 pass
 
         try:
-            await interaction.response.send_message("Vote recorded.", ephemeral=True)
+            await interaction.response.send_message("Pilihan kamu berhasil dicatat.", ephemeral=True)
         except Exception:
             return
+
+    async def handle_poll_vote_from_interaction(self, interaction: discord.Interaction, message_id: int, option_index: int):
+        await self._handle_poll_vote(interaction, message_id, option_index)
 
     async def handle_poll(
         self,
@@ -702,6 +796,7 @@ class ConfessionHandler:
         custom_color: Optional[str] = None,
         attachment: Optional[discord.Attachment] = None,
         attachment_url: Optional[str] = None,
+        options: Optional[list[str]] = None,
     ):
         if not self.is_open:
             await ctx.send("Poll sedang ditutup.")
@@ -723,6 +818,7 @@ class ConfessionHandler:
                 question,
                 attachment_url=resolved_attachment_url,
                 custom_color=custom_color,
+                options=options,
             )
         except ValueError:
             await ctx.send("Custom color tidak valid. Gunakan hex seperti #ff0000 atau nama warna seperti red.")
@@ -740,6 +836,7 @@ class ConfessionHandler:
         attachment_url: Optional[str],
         custom_color: Optional[str] = None,
         attachment: Optional[discord.Attachment] = None,
+        options: Optional[list[str]] = None,
     ):
         if not interaction.response.is_done():
             try:
@@ -767,6 +864,7 @@ class ConfessionHandler:
                 question,
                 resolved_attachment_url,
                 custom_color,
+                options,
             )
         except ValueError:
             await self._respond_interaction(

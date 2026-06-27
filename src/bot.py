@@ -64,7 +64,21 @@ async def confess(ctx, *, confession: str):
 @bot.command(name='poll')
 async def poll(ctx, *, question: str):
     first_attachment = ctx.message.attachments[0] if ctx.message.attachments else None
-    await handler.handle_poll(ctx, question, attachment=first_attachment)
+    
+    parsed_options = None
+    if "|" in question:
+        parts = question.split("|")
+        question_text = parts[0].strip()
+        parsed_options = [opt.strip() for opt in parts[1:] if opt.strip()]
+    else:
+        question_text = question.strip()
+        
+    await handler.handle_poll(
+        ctx,
+        question_text,
+        attachment=first_attachment,
+        options=parsed_options,
+    )
 
 
 @bot.command(name='confess_setup')
@@ -153,6 +167,7 @@ async def slash_confess(
 @bot.tree.command(name="poll", description="Buat poll anonim")
 @app_commands.describe(
     question="Pertanyaan poll",
+    options="Opsi jawaban, pisahkan dengan koma (contoh: Vyn, Vyn) atau kosongkan untuk Yes/No",
     attachment="File foto opsional",
     attachment_url="URL attachment opsional",
     custom_color="Warna kustom opsional",
@@ -160,16 +175,24 @@ async def slash_confess(
 async def slash_poll(
     interaction: discord.Interaction,
     question: str,
+    options: Optional[str] = None,
     attachment: Optional[discord.Attachment] = None,
     attachment_url: Optional[str] = None,
     custom_color: Optional[str] = None,
 ):
+    parsed_options = None
+    if options:
+        parsed_options = [opt.strip() for opt in options.split(",") if opt.strip()]
+        if not parsed_options:
+            parsed_options = None
+
     await handler.handle_poll_interaction(
         interaction,
         question,
         attachment_url,
         custom_color,
         attachment,
+        options=parsed_options,
     )
 
 
@@ -257,5 +280,20 @@ async def slash_confess_audit(interaction: discord.Interaction, confession_id: i
         f"Confession #{confession_id} dikirim oleh {who}",
         ephemeral=True,
     )
+
+async def on_interaction_listener(interaction: discord.Interaction):
+    if interaction.type == discord.InteractionType.component:
+        custom_id = interaction.data.get("custom_id", "")
+        if custom_id.startswith("poll_vote_"):
+            parts = custom_id.split("_")
+            if len(parts) >= 4:
+                try:
+                    message_id = int(parts[2])
+                    option_index = int(parts[3])
+                    await handler.handle_poll_vote_from_interaction(interaction, message_id, option_index)
+                except Exception as e:
+                    print(f"Error handling poll vote interaction: {e}")
+
+bot.add_listener(on_interaction_listener, "on_interaction")
 
 bot.run(TOKEN)
