@@ -23,11 +23,11 @@ class ConfessionModal(discord.ui.Modal):
         max_values=1,
     )
     custom_color = discord.ui.TextInput(
-        label="Custom Color (optional)",
+        label="Warna Embed (opsional)",
         style=discord.TextStyle.short,
         max_length=32,
         required=False,
-        placeholder="Ex: ff0000, #ff0000, or red",
+        placeholder="Contoh: ff0000, #ff0000, atau red",
     )
 
     def __init__(self, handler: "ConfessionHandler", mode: str, source_message_id: Optional[int] = None):
@@ -81,11 +81,11 @@ class PollModal(discord.ui.Modal):
         max_values=1,
     )
     custom_color = discord.ui.TextInput(
-        label="Custom Color (optional)",
+        label="Warna Embed (opsional)",
         style=discord.TextStyle.short,
         max_length=32,
         required=False,
-        placeholder="Ex: ff0000, #ff0000, or red",
+        placeholder="Contoh: ff0000, #ff0000, atau red",
     )
 
     def __init__(self, handler: "ConfessionHandler"):
@@ -148,6 +148,30 @@ class ConfessionItemView(discord.ui.View):
             )
         except discord.NotFound:
             return
+
+
+class PollVoteButton(discord.ui.Button):
+    """A single vote button for a poll option. Uses a deterministic custom_id
+    so it survives bot restarts (persistent view)."""
+
+    def __init__(self, handler: "ConfessionHandler", message_id: int, option_index: int, label: str):
+        custom_id = f"poll_vote_{message_id}_{option_index}"
+        super().__init__(label=f"Vote: {label}", style=discord.ButtonStyle.primary, custom_id=custom_id)
+        self.handler = handler
+        self.poll_message_id = message_id
+        self.option_index = option_index
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.handler._handle_poll_vote(interaction, self.poll_message_id, self.option_index)
+
+
+class PollVoteView(discord.ui.View):
+    """Persistent view containing vote buttons for a poll."""
+
+    def __init__(self, handler: "ConfessionHandler", message_id: int, options: list[str]):
+        super().__init__(timeout=None)
+        for idx, opt in enumerate(options):
+            self.add_item(PollVoteButton(handler, message_id, idx, opt))
 
 class ConfessionHandler:
     def __init__(self, bot):
@@ -660,9 +684,11 @@ class ConfessionHandler:
             attachment_url,
         )
         
-        # Add each option as a field with formatted vote display
+        # Add each option as a field with formatted vote display + progress bar
         for idx, opt in enumerate(options):
-            embed.add_field(name=f"📊 {opt}", value="0 votes", inline=False)
+            bar = self._progress_bar(0)
+            embed.add_field(name=f"📊 {opt}", value=f"{bar}  **0** votes", inline=False)
+        embed.set_footer(text="Total: 0 votes • Anonim")
         
         sent_msg = await confession_channel.send(embed=embed)
         # store poll state
@@ -689,18 +715,21 @@ class ConfessionHandler:
         return sent_msg
 
     def _make_poll_view(self, message_id: int, options: list[str]) -> discord.ui.View:
-        view = discord.ui.View(timeout=None)
+        """Create a PollVoteView (persistent) for the given poll."""
+        return PollVoteView(self, message_id, options)
 
-        for idx, opt in enumerate(options):
-            button = discord.ui.Button(label=f"Vote: {opt}", style=discord.ButtonStyle.primary, custom_id=f"poll_vote_{message_id}_{idx}", emoji="✓")
+    def get_all_persistent_poll_views(self) -> list[discord.ui.View]:
+        """Return persistent views for every stored poll so they can be
+        registered in on_ready and survive bot restarts."""
+        views: list[discord.ui.View] = []
+        for message_id, options in self._poll_options.items():
+            views.append(PollVoteView(self, message_id, options))
+        return views
 
-            async def _cb(interaction: discord.Interaction, _idx=idx, _mid=message_id):
-                await self._handle_poll_vote(interaction, _mid, _idx)
-
-            button.callback = _cb
-            view.add_item(button)
-
-        return view
+    @staticmethod
+    def _progress_bar(percentage: float, length: int = 10) -> str:
+        filled = round(percentage / 100 * length)
+        return "█" * filled + "░" * (length - filled)
 
     async def _handle_poll_vote(self, interaction: discord.Interaction, message_id: int, option_index: int):
         # ensure poll exists
@@ -758,24 +787,18 @@ class ConfessionHandler:
 
         if poll_msg and poll_msg.embeds:
             embed = poll_msg.embeds[0]
-            # update fields with new vote counts and percentage
-            if embed.fields:
-                new_fields = []
-                total_votes = sum(counts)
-                for i, (field) in enumerate(embed.fields):
-                    if i < len(options):
-                        vote_count = counts[i]
-                        percentage = (vote_count / total_votes * 100) if total_votes > 0 else 0
-                        value_text = f"{vote_count} vote{'s' if vote_count != 1 else ''}"
-                        if total_votes > 0:
-                            value_text += f" ({percentage:.0f}%)"
-                        new_fields.append({"name": f"📊 {options[i]}", "value": value_text, "inline": False})
-                    else:
-                        new_fields.append({"name": field.name, "value": field.value, "inline": field.inline})
-                # Recreate fields
-                embed.clear_fields()
-                for f in new_fields:
-                    embed.add_field(name=f["name"], value=f["value"], inline=f["inline"])
+            total_votes = sum(counts)
+            # Rebuild option fields with progress bar
+            embed.clear_fields()
+            for i, opt in enumerate(options):
+                vote_count = counts[i] if i < len(counts) else 0
+                percentage = (vote_count / total_votes * 100) if total_votes > 0 else 0
+                bar = self._progress_bar(percentage)
+                value_text = f"{bar}  **{vote_count}** vote{'s' if vote_count != 1 else ''}"
+                if total_votes > 0:
+                    value_text += f" ({percentage:.0f}%)"
+                embed.add_field(name=f"📊 {opt}", value=value_text, inline=False)
+            embed.set_footer(text=f"Total: {total_votes} vote{'s' if total_votes != 1 else ''} • Anonim")
             try:
                 await poll_msg.edit(embed=embed)
             except Exception:

@@ -43,6 +43,9 @@ async def on_ready():
     if not _persistent_view_added:
         bot.add_view(handler.get_persistent_view())
         bot.add_view(handler.get_persistent_reply_view())
+        # Register all stored poll vote views so buttons survive restarts
+        for poll_view in handler.get_all_persistent_poll_views():
+            bot.add_view(poll_view)
         _persistent_view_added = True
     if not _tree_synced:
         await bot.tree.sync()
@@ -167,7 +170,7 @@ async def slash_confess(
 @bot.tree.command(name="poll", description="Buat poll anonim")
 @app_commands.describe(
     question="Pertanyaan poll",
-    options="Opsi jawaban, pisahkan dengan koma (contoh: Vyn, Vyn) atau kosongkan untuk Yes/No",
+    options="Opsi jawaban, pisahkan dengan koma (contoh: Opsi A, Opsi B, Opsi C) atau kosongkan untuk Yes/No",
     attachment="File foto opsional",
     attachment_url="URL attachment opsional",
     custom_color="Warna kustom opsional",
@@ -280,20 +283,5 @@ async def slash_confess_audit(interaction: discord.Interaction, confession_id: i
         f"Confession #{confession_id} dikirim oleh {who}",
         ephemeral=True,
     )
-
-async def on_interaction_listener(interaction: discord.Interaction):
-    if interaction.type == discord.InteractionType.component:
-        custom_id = interaction.data.get("custom_id", "")
-        if custom_id.startswith("poll_vote_"):
-            parts = custom_id.split("_")
-            if len(parts) >= 4:
-                try:
-                    message_id = int(parts[2])
-                    option_index = int(parts[3])
-                    await handler.handle_poll_vote_from_interaction(interaction, message_id, option_index)
-                except Exception as e:
-                    print(f"Error handling poll vote interaction: {e}")
-
-bot.add_listener(on_interaction_listener, "on_interaction")
 
 bot.run(TOKEN)
