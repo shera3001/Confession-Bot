@@ -173,6 +173,25 @@ class PollVoteView(discord.ui.View):
         for idx, opt in enumerate(options):
             self.add_item(PollVoteButton(handler, message_id, idx, opt))
 
+
+class ReplyNotificationToggleButton(discord.ui.Button):
+    def __init__(self, handler: "ConfessionHandler"):
+        super().__init__(
+            label="Disable reply notifications",
+            style=discord.ButtonStyle.danger,
+            custom_id="confess_disable_reply_notifications",
+        )
+        self.handler = handler
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.handler.disable_reply_notifications(interaction)
+
+
+class ReplyNotificationToggleView(discord.ui.View):
+    def __init__(self, handler: "ConfessionHandler"):
+        super().__init__(timeout=None)
+        self.add_item(ReplyNotificationToggleButton(handler))
+
 class ConfessionHandler:
     def __init__(self, bot):
         self.bot = bot
@@ -193,6 +212,7 @@ class ConfessionHandler:
         self._poll_options: dict[int, list[str]] = {}
         # Poll votes: message_id -> dict[user_id -> option_index]
         self._poll_votes: dict[int, dict[int, int]] = {}
+        self._reply_notification_disabled_user_ids: set[int] = set()
         self._load_data()
 
     # ── Guild config helpers ─────────────────────────────────────────
@@ -262,6 +282,9 @@ class ConfessionHandler:
             raw_audit = data.get("audit_map", {})
             self._audit_map = {int(k): v for k, v in raw_audit.items()}
 
+            raw_reply_opt_outs = data.get("reply_notification_disabled_user_ids", [])
+            self._reply_notification_disabled_user_ids = {int(user_id) for user_id in raw_reply_opt_outs}
+
             raw_guilds = data.get("guild_config", {})
             for gid, cfg in raw_guilds.items():
                 self._guild_config[int(gid)] = cfg
@@ -279,6 +302,7 @@ class ConfessionHandler:
                 },
                 "counter": self._counter,
                 "audit_map": {str(k): v for k, v in self._audit_map.items()},
+                "reply_notification_disabled_user_ids": sorted(self._reply_notification_disabled_user_ids),
                 "guild_config": {str(gid): cfg for gid, cfg in self._guild_config.items()},
             }
             with open(filepath, "w", encoding="utf-8") as f:
@@ -291,6 +315,40 @@ class ConfessionHandler:
 
     def get_persistent_reply_view(self) -> discord.ui.View:
         return ConfessionItemView(self)
+
+    def get_persistent_reply_notification_view(self) -> discord.ui.View:
+        return ReplyNotificationToggleView(self)
+
+    def is_reply_notification_disabled(self, user_id: int) -> bool:
+        return user_id in self._reply_notification_disabled_user_ids
+
+    async def disable_reply_notifications(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        if self.is_reply_notification_disabled(user_id):
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+            try:
+                await interaction.followup.send("Reply notifications sudah dimatikan.")
+            except Exception:
+                pass
+            return
+
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+
+        self._reply_notification_disabled_user_ids.add(user_id)
+        self._save_data()
+
+        try:
+            if interaction.message is not None:
+                await interaction.message.edit(view=None)
+        except discord.HTTPException:
+            pass
+
+        try:
+            await interaction.followup.send("Reply notifications sudah dimatikan.")
+        except Exception:
+            pass
 
     def _next_id(self) -> int:
         self._counter += 1
@@ -396,6 +454,9 @@ class ConfessionHandler:
         if not original_user_id:
             return
 
+        if self.is_reply_notification_disabled(original_user_id):
+            return
+
         member = guild.get_member(original_user_id)
         if member is None:
             try:
@@ -407,7 +468,9 @@ class ConfessionHandler:
             await member.send(
                 f"Ada balasan baru pada confession anonim kamu (#{origin_confession_id}).\n"
                 f"Link thread: {reply_message.jump_url}\n"
-                "Ini hanya notifikasi, identitas pengirim balasan tetap rahasia."
+                "Ini hanya notifikasi, identitas pengirim balasan tetap rahasia.\n"
+                "Jika tidak ingin menerima notifikasi seperti ini lagi, klik tombol di bawah.",
+                view=ReplyNotificationToggleView(self),
             )
         except (discord.Forbidden, discord.HTTPException):
             return

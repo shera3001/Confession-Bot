@@ -43,6 +43,7 @@ async def on_ready():
     if not _persistent_view_added:
         bot.add_view(handler.get_persistent_view())
         bot.add_view(handler.get_persistent_reply_view())
+        bot.add_view(handler.get_persistent_reply_notification_view())
         # Register all stored poll vote views so buttons survive restarts
         for poll_view in handler.get_all_persistent_poll_views():
             bot.add_view(poll_view)
