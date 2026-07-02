@@ -197,6 +197,7 @@ class ConfessionHandler:
         self.bot = bot
         self._counter = 0
         self._audit_map = {}
+        self._reply_counts: dict[int, int] = {}
 
         # Per-guild config: guild_id -> {confession_channel_id, audit_channel_id, is_open}
         self._guild_config: dict[int, dict] = {}
@@ -282,6 +283,9 @@ class ConfessionHandler:
             raw_audit = data.get("audit_map", {})
             self._audit_map = {int(k): v for k, v in raw_audit.items()}
 
+            raw_reply_counts = data.get("reply_counts", {})
+            self._reply_counts = {int(k): int(v) for k, v in raw_reply_counts.items()}
+
             raw_reply_opt_outs = data.get("reply_notification_disabled_user_ids", [])
             self._reply_notification_disabled_user_ids = {int(user_id) for user_id in raw_reply_opt_outs}
 
@@ -302,6 +306,7 @@ class ConfessionHandler:
                 },
                 "counter": self._counter,
                 "audit_map": {str(k): v for k, v in self._audit_map.items()},
+                "reply_counts": {str(k): v for k, v in self._reply_counts.items()},
                 "reply_notification_disabled_user_ids": sorted(self._reply_notification_disabled_user_ids),
                 "guild_config": {str(gid): cfg for gid, cfg in self._guild_config.items()},
             }
@@ -561,6 +566,9 @@ class ConfessionHandler:
         if origin_confession_id is None:
             return None
 
+        reply_count = self._reply_counts.get(origin_confession_id, 0) + 1
+        self._reply_counts[origin_confession_id] = reply_count
+
         resolved_attachment_url, attachment_error = self._resolve_attachment_url(attachment, attachment_url)
         if attachment_error:
             raise ValueError(attachment_error)
@@ -575,11 +583,12 @@ class ConfessionHandler:
         if embed_color is None:
             raise ValueError("Invalid custom color")
         embed = self._build_embed(
-            f"Anonymous Reply (#{reply_id})",
+            f"Anonymous Reply (#{origin_confession_id}-{reply_count})",
             f"**Pesan:**\n\"{content}\"",
             embed_color,
             resolved_attachment_url,
         )
+        embed.set_footer(text=f"Reply untuk confession #{origin_confession_id} • Anonim")
         sent_msg = await thread.send(embed=embed)
         self._audit_map[reply_id] = author.id
         self._save_data()
