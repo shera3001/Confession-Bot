@@ -175,22 +175,24 @@ class PollVoteView(discord.ui.View):
 
 
 class ReplyNotificationToggleButton(discord.ui.Button):
-    def __init__(self, handler: "ConfessionHandler"):
+    def __init__(self, handler: "ConfessionHandler", is_disabled: bool = False):
+        label = "Enable reply notifications" if is_disabled else "Disable reply notifications"
+        style = discord.ButtonStyle.green if is_disabled else discord.ButtonStyle.danger
         super().__init__(
-            label="Disable reply notifications",
-            style=discord.ButtonStyle.danger,
+            label=label,
+            style=style,
             custom_id="confess_disable_reply_notifications",
         )
         self.handler = handler
 
     async def callback(self, interaction: discord.Interaction):
-        await self.handler.disable_reply_notifications(interaction)
+        await self.handler.toggle_reply_notifications(interaction)
 
 
 class ReplyNotificationToggleView(discord.ui.View):
-    def __init__(self, handler: "ConfessionHandler"):
+    def __init__(self, handler: "ConfessionHandler", is_disabled: bool = False):
         super().__init__(timeout=None)
-        self.add_item(ReplyNotificationToggleButton(handler))
+        self.add_item(ReplyNotificationToggleButton(handler, is_disabled))
 
 class ConfessionHandler:
     def __init__(self, bot):
@@ -327,31 +329,35 @@ class ConfessionHandler:
     def is_reply_notification_disabled(self, user_id: int) -> bool:
         return user_id in self._reply_notification_disabled_user_ids
 
-    async def disable_reply_notifications(self, interaction: discord.Interaction):
+    async def toggle_reply_notifications(self, interaction: discord.Interaction):
         user_id = interaction.user.id
-        if self.is_reply_notification_disabled(user_id):
-            if not interaction.response.is_done():
-                await interaction.response.defer()
-            try:
-                await interaction.followup.send("Reply notifications sudah dimatikan.")
-            except Exception:
-                pass
-            return
-
         if not interaction.response.is_done():
-            await interaction.response.defer()
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except discord.NotFound:
+                return
 
-        self._reply_notification_disabled_user_ids.add(user_id)
-        self._save_data()
+        is_disabled = self.is_reply_notification_disabled(user_id)
+
+        if is_disabled:
+            self._reply_notification_disabled_user_ids.discard(user_id)
+            self._save_data()
+            status_text = "Reply notifications berhasil diaktifkan kembali."
+            new_is_disabled = False
+        else:
+            self._reply_notification_disabled_user_ids.add(user_id)
+            self._save_data()
+            status_text = "Reply notifications sudah dimatikan."
+            new_is_disabled = True
 
         try:
             if interaction.message is not None:
-                await interaction.message.edit(view=None)
+                await interaction.message.edit(view=ReplyNotificationToggleView(self, new_is_disabled))
         except discord.HTTPException:
             pass
 
         try:
-            await interaction.followup.send("Reply notifications sudah dimatikan.")
+            await interaction.followup.send(status_text, ephemeral=True)
         except Exception:
             pass
 
