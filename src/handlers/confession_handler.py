@@ -576,7 +576,7 @@ class ConfessionHandler:
             raise ValueError("Invalid custom color")
         embed = self._build_embed(
             f"Anonymous Reply (#{reply_id})",
-            content,
+            f"**Pesan:**\n\"{content}\"",
             embed_color,
             resolved_attachment_url,
         )
