@@ -454,6 +454,7 @@ class ConfessionHandler:
         source_message: discord.Message,
         origin_confession_id: int,
         reply_message: discord.Message,
+        content: str,
     ):
         original_user_id = self._audit_map.get(origin_confession_id)
         if not original_user_id:
@@ -469,16 +470,38 @@ class ConfessionHandler:
             except discord.HTTPException:
                 return
 
+        thread = reply_message.channel
+        parent_mention = ""
+        if isinstance(thread, discord.Thread) and thread.parent:
+            parent_mention = f"\n{thread.parent.mention}"
+
+        msg_content = f"A reply was added to one of your confessions: {thread.mention}{parent_mention}"
+
+        reply_count = self._reply_counts.get(origin_confession_id, 1)
+        embed_color = reply_message.embeds[0].color if reply_message.embeds else discord.Color.teal()
+        
+        embed = discord.Embed(
+            title=f"Anonymous Reply (#{origin_confession_id}-{reply_count})",
+            description=f'"{content}"',
+            color=embed_color,
+        )
+
+        if reply_message.embeds and reply_message.embeds[0].image:
+            embed.set_image(url=reply_message.embeds[0].image.url)
+        elif reply_message.embeds:
+            for field in reply_message.embeds[0].fields:
+                if field.name == "Attachment":
+                    embed.add_field(name="Attachment", value=field.value, inline=False)
+
         try:
             await member.send(
-                f"Ada balasan baru pada confession anonim kamu (#{origin_confession_id}).\n"
-                f"Link thread: {reply_message.jump_url}\n"
-                "Ini hanya notifikasi, identitas pengirim balasan tetap rahasia.\n"
-                "Jika tidak ingin menerima notifikasi seperti ini lagi, klik tombol di bawah.",
+                content=msg_content,
+                embed=embed,
                 view=ReplyNotificationToggleView(self),
             )
         except (discord.Forbidden, discord.HTTPException):
             return
+
 
     async def _send_audit_log(
         self,
@@ -603,7 +626,7 @@ class ConfessionHandler:
             extra_link_text=source_message.jump_url,
         )
 
-        await self._notify_original_author(guild, source_message, origin_confession_id, sent_msg)
+        await self._notify_original_author(guild, source_message, origin_confession_id, sent_msg, content)
         return sent_msg
 
     async def setup_channels(self, ctx, confession_channel: discord.TextChannel, audit_channel: discord.TextChannel):
